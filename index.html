@@ -1560,8 +1560,9 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   const CDN='https://cdn.jsdelivr.net/npm';
   const FFmpegModuleURL=CDN+'/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js';
   const FFmpegCoreBase=CDN+'/@ffmpeg/core@0.12.10/dist/umd';
-  const FFmpegWorkerURL=CDN+'/@ffmpeg/ffmpeg@0.12.15/dist/esm/worker.js';
-  let ffmpegClassWorkerBlobURL=null;
+  // Host the FFmpeg class worker and its ESM dependencies on this Pages origin.
+  // A Worker constructor cannot load its entry script directly from jsDelivr.
+  const FFmpegWorkerURL = new URL('/ffmpeg/worker.js', window.location.origin).href;
   const status=(msg,bad=false)=>{statusEl.textContent=msg;statusEl.style.color=bad?'#e16b6b':'';};
   function updateScale(){
     const input=Number(info?.fps)||0, output=Number($('fpsOutput').value);
@@ -1636,14 +1637,9 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
       try{
         coreURL=await loadAsset(FFmpegCoreBase+'/ffmpeg-core.js','text/javascript');
         wasmURL=await loadAsset(FFmpegCoreBase+'/ffmpeg-core.wasm','application/wasm');
-        // The package's default Worker URL points at jsDelivr, which browsers block
-        // as a cross-origin Worker. Start a same-origin blob Worker that imports
-        // the official module worker; its const.js/errors.js imports stay on jsDelivr.
-        if (!ffmpegClassWorkerBlobURL) {
-          const bootstrap = `import ${JSON.stringify(FFmpegWorkerURL)};`;
-          ffmpegClassWorkerBlobURL = URL.createObjectURL(new Blob([bootstrap], {type:'text/javascript'}));
-        }
-        await ffmpeg.load({coreURL,wasmURL,classWorkerURL:ffmpegClassWorkerBlobURL});
+        // Explicit absolute same-origin URL prevents FFmpeg from falling back
+        // to the CDN worker derived from import.meta.url.
+        await ffmpeg.load({coreURL, wasmURL, classWorkerURL: FFmpegWorkerURL});
       }finally{
         if(coreURL)URL.revokeObjectURL(coreURL);
         if(wasmURL)URL.revokeObjectURL(wasmURL);
