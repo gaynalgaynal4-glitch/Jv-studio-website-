@@ -92,15 +92,15 @@ input[type=file] { display:none; }
 .enhance-desc { font-size:12px; color:var(--muted); margin-top:5px; line-height:1.5; }
     .enhance-required { display:none; margin-top:7px; color:var(--success); font-size:11px; font-weight:850; letter-spacing:.06em; text-transform:uppercase; }
     .enhance-required.show { display:block; }
-    .switch.locked { opacity:.78; cursor:not--allowed; }
+    .switch.locked { opacity:.78; cursor:not-allowed; }
     .switch.locked .slider { cursor:not-allowed; }
 .enhance-row > div:last-child { display:flex; flex-direction:column; align-items:flex-end; flex:none; min-width:48px; }
-.switch { display:block; width:48px; height:28px; position:relative; flex:none; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+.switch { display:block; width:52px; height:30px; position:relative; flex:none; cursor:pointer; -webkit-tap-highlight-color:transparent; }
 .switch input { position:absolute; inset:0; z-index:2; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
 .slider { display:block; position:absolute; inset:0; cursor:pointer; background:light-dark(#cbd5da,#3b4a54); border-radius:99px; transition:background .2s; }
-.slider:before { content:""; position:absolute; width:20px; height:20px; left:4px; top:4px; border-radius:50%; background:white; transition:transform .2s; box-shadow:0 1px 3px #0003; }
+.slider:before { content:""; position:absolute; width:22px; height:22px; left:4px; top:4px; border-radius:50%; background:white; transition:transform .2s; box-shadow:0 1px 3px #0003; }
 .switch input:checked + .slider { background:var(--site-primary); }
-.switch input:checked + .slider:before { transform:translateX(20px); background:#18220f; }
+.switch input:checked + .slider:before { transform:translateX(22px); background:#18220f; }
 .switch input:focus-visible + .slider { outline:2px solid var(--site-primary); outline-offset:3px; }
 .switch input:disabled, .switch input:disabled + .slider { cursor:not-allowed; }
 .meta-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:13px; }
@@ -931,7 +931,13 @@ globalThis.WtmVideoEncoder = Object.freeze({ targetDimensions, reencode });
   dropzone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
   fileInput.addEventListener('change', e => loadFile(e.target.files[0]));
   $('removeFile').addEventListener('click', clearFile);
-  enhancer.addEventListener('change', refreshMode);
+  enhancer.addEventListener('change', () => {
+    const sw = document.getElementById('enhancerSwitch');
+    if (sw) sw.setAttribute('aria-checked', enhancer.checked ? 'true' : 'false');
+    refreshMode();
+  });
+  const enhancerSwitch = document.getElementById('enhancerSwitch');
+  if (enhancerSwitch) { enhancerSwitch.setAttribute('role','switch'); enhancerSwitch.setAttribute('aria-checked', enhancer.checked ? 'true' : 'false'); }
   standardRoute.addEventListener('click', () => selectRoute('standard'));
   secureRoute.addEventListener('click', () => selectRoute('secure'));
   jarvisOption.addEventListener('click', () => selectMethod('jarvis'));
@@ -1559,10 +1565,67 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   let selected=null, info=null, busy=false, ffmpegInstance=null, ffmpegLoadPromise=null;
   const CDN='https://cdn.jsdelivr.net/npm';
   const FFmpegModuleURL=CDN+'/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js';
-  const FFmpegCoreBase=CDN+'/@ffmpeg/core@0.12.10/dist/umd';
-  // Host the FFmpeg class worker and its ESM dependencies on this Pages origin.
-  // A Worker constructor cannot load its entry script directly from jsDelivr.
-  const FFmpegWorkerURL = new URL('/ffmpeg/worker.js', window.location.origin).href;
+  // All FFmpeg runtime files are hosted beside index.html on the same origin.
+  const FFmpegCoreZipURL = new URL('./ffmpeg-core.zip', window.location.href).href;
+  const FFmpegWorkerURL = new URL('./worker.js', window.location.href).href;
+  let ffmpegCoreAssetsPromise = null;
+
+  // Read ZIP central-directory entries and extract the two FFmpeg core assets
+  // in memory. Supports ordinary ZIP STORE and DEFLATE entries (not ZIP64).
+  async function extractCoreAssets(zipBytes) {
+    const view = new DataView(zipBytes);
+    let eocd = -1;
+    for (let p = zipBytes.byteLength - 22, min = Math.max(0, zipBytes.byteLength - 65557); p >= min; p--) {
+      if (view.getUint32(p, true) === 0x06054b50) { eocd = p; break; }
+    }
+    if (eocd < 0) throw new Error('Invalid ffmpeg-core.zip: ZIP directory not found.');
+    const count = view.getUint16(eocd + 10, true);
+    const dirSize = view.getUint32(eocd + 12, true);
+    const dirOffset = view.getUint32(eocd + 16, true);
+    if (dirOffset + dirSize > zipBytes.byteLength) throw new Error('Invalid FFmpeg ZIP directory.');
+    const decoder = new TextDecoder();
+    const wanted = new Set(['ffmpeg-core.js','ffmpeg-core.wasm']);
+    const entries = {}; let p = dirOffset;
+    for (let i = 0; i < count; i++) {
+      if (view.getUint32(p, true) !== 0x02014b50) throw new Error('Corrupt FFmpeg ZIP entry.');
+      const method = view.getUint16(p + 10, true);
+      const compressedSize = view.getUint32(p + 20, true);
+      const nameLen = view.getUint16(p + 28, true);
+      const extraLen = view.getUint16(p + 30, true);
+      const commentLen = view.getUint16(p + 32, true);
+      const localOffset = view.getUint32(p + 42, true);
+      const name = decoder.decode(new Uint8Array(zipBytes, p + 46, nameLen)).replace(/\\/g,'/').split('/').pop();
+      if (wanted.has(name)) entries[name] = {method, compressedSize, localOffset};
+      p += 46 + nameLen + extraLen + commentLen;
+    }
+    async function unpack(name) {
+      const e = entries[name]; if (!e) throw new Error(`ffmpeg-core.zip is missing ${name}.`);
+      const lp = e.localOffset;
+      if (view.getUint32(lp, true) !== 0x04034b50) throw new Error(`Invalid ZIP header for ${name}.`);
+      const nl = view.getUint16(lp + 26, true), el = view.getUint16(lp + 28, true);
+      const start = lp + 30 + nl + el;
+      const compressed = new Uint8Array(zipBytes, start, e.compressedSize);
+      if (e.method === 0) return compressed.slice();
+      if (e.method !== 8) throw new Error(`Unsupported ZIP compression method ${e.method} for ${name}.`);
+      if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot extract DEFLATE ZIP files. Use a recent Chrome browser.');
+      const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+    const [js, wasm] = await Promise.all([unpack('ffmpeg-core.js'), unpack('ffmpeg-core.wasm')]);
+    return {js, wasm};
+  }
+  async function getCoreBlobURLs() {
+    if (!ffmpegCoreAssetsPromise) ffmpegCoreAssetsPromise = (async () => {
+      const response = await fetch(FFmpegCoreZipURL, {cache:'no-store'});
+      if (!response.ok) throw new Error(`Could not load ./ffmpeg-core.zip (${response.status}). Upload it beside index.html.`);
+      const assets = await extractCoreAssets(await response.arrayBuffer());
+      return {
+        coreURL: URL.createObjectURL(new Blob([assets.js], {type:'text/javascript'})),
+        wasmURL: URL.createObjectURL(new Blob([assets.wasm], {type:'application/wasm'}))
+      };
+    })();
+    return ffmpegCoreAssetsPromise;
+  }
   const status=(msg,bad=false)=>{statusEl.textContent=msg;statusEl.style.color=bad?'#e16b6b':'';};
   function updateScale(){
     const input=Number(info?.fps)||0, output=Number($('fpsOutput').value);
@@ -1628,22 +1691,10 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
           status(`Remuxing MP4 timestamps locally… ${pct}%`);
         }
       });
-      const loadAsset=async(url,mime)=>{
-        const response=await fetch(url,{mode:'cors',cache:'force-cache'});
-        if(!response.ok)throw new Error(`Could not load FFmpeg engine asset (${response.status}).`);
-        return URL.createObjectURL(new Blob([await response.arrayBuffer()],{type:mime}));
-      };
-      let coreURL,wasmURL;
-      try{
-        coreURL=await loadAsset(FFmpegCoreBase+'/ffmpeg-core.js','text/javascript');
-        wasmURL=await loadAsset(FFmpegCoreBase+'/ffmpeg-core.wasm','application/wasm');
-        // Explicit absolute same-origin URL prevents FFmpeg from falling back
-        // to the CDN worker derived from import.meta.url.
-        await ffmpeg.load({coreURL, wasmURL, classWorkerURL: FFmpegWorkerURL});
-      }finally{
-        if(coreURL)URL.revokeObjectURL(coreURL);
-        if(wasmURL)URL.revokeObjectURL(wasmURL);
-      }
+      // Extract ffmpeg-core.js and ffmpeg-core.wasm from the ZIP in browser memory.
+      // No extracted directory or external core CDN is required.
+      const {coreURL, wasmURL} = await getCoreBlobURLs();
+      await ffmpeg.load({coreURL, wasmURL, classWorkerURL: FFmpegWorkerURL});
       ffmpegInstance=ffmpeg;
       return ffmpeg;
     })();
