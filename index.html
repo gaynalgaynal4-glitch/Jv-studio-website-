@@ -94,12 +94,15 @@ input[type=file] { display:none; }
     .enhance-required.show { display:block; }
     .switch.locked { opacity:.78; cursor:not--allowed; }
     .switch.locked .slider { cursor:not-allowed; }
-.switch { width:48px; height:28px; position:relative; flex:none; }
-.switch input { opacity:0; width:0; height:0; }
-.slider { position:absolute; inset:0; cursor:pointer; background:light-dark(#cbd5da,#3b4a54); border-radius:99px; transition:.2s; }
-.slider:before { content:""; position:absolute; width:20px; height:20px; left:4px; top:4px; border-radius:50%; background:white; transition:.2s; box-shadow:0 1px 3px #0003; }
+.enhance-row > div:last-child { display:flex; flex-direction:column; align-items:flex-end; flex:none; min-width:48px; }
+.switch { display:block; width:48px; height:28px; position:relative; flex:none; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+.switch input { position:absolute; inset:0; z-index:2; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
+.slider { display:block; position:absolute; inset:0; cursor:pointer; background:light-dark(#cbd5da,#3b4a54); border-radius:99px; transition:background .2s; }
+.slider:before { content:""; position:absolute; width:20px; height:20px; left:4px; top:4px; border-radius:50%; background:white; transition:transform .2s; box-shadow:0 1px 3px #0003; }
 .switch input:checked + .slider { background:var(--site-primary); }
 .switch input:checked + .slider:before { transform:translateX(20px); background:#18220f; }
+.switch input:focus-visible + .slider { outline:2px solid var(--site-primary); outline-offset:3px; }
+.switch input:disabled, .switch input:disabled + .slider { cursor:not-allowed; }
 .meta-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:13px; }
 .meta { background:var(--surface-2); border-radius:10px; padding:10px; min-width:0; }
 .meta small { display:block; color:var(--muted); font-size:10px; margin-bottom:5px; }
@@ -874,7 +877,17 @@ globalThis.WtmVideoEncoder = Object.freeze({ targetDimensions, reencode });
     else setStatus(method === 'luna' ? 'Luna selected. Your video will be processed locally.' : 'Jarvis selected. Your video will be sent to the server when you start processing.');
   }
   function refreshMode() {
-    if (!file || !sourceInfo) return;
+    if (!file || !sourceInfo) {
+      $('targetNote').classList.remove('show');
+      processBtn.disabled = true;
+      processBtn.textContent = 'Choose a video first';
+      if (!busy) setStatus(routeMode === 'secure'
+        ? 'Secure Method is selected. Enhancer is locked on and required.'
+        : (processingMethod === 'jarvis'
+          ? (enhancer.checked ? 'Jarvis is selected. Server enhancement is enabled; choose a video to continue.' : 'Jarvis is selected. Server patch-only mode is enabled; choose a video to continue.')
+          : (enhancer.checked ? 'Luna is selected. Local enhancement is enabled; choose a video to continue.' : 'Luna is selected. Local patch-only mode is enabled; choose a video to continue.')));
+      return;
+    }
     const required = needsEnhance(sourceInfo);
     const on = routeMode === 'secure' || (enhancer.checked && required);
     const localEnhanceSkipped = processingMethod === 'luna' && enhancer.checked && !required;
@@ -1547,6 +1560,8 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   const CDN='https://cdn.jsdelivr.net/npm';
   const FFmpegModuleURL=CDN+'/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js';
   const FFmpegCoreBase=CDN+'/@ffmpeg/core@0.12.10/dist/umd';
+  const FFmpegWorkerURL=CDN+'/@ffmpeg/ffmpeg@0.12.15/dist/esm/worker.js';
+  let ffmpegClassWorkerBlobURL=null;
   const status=(msg,bad=false)=>{statusEl.textContent=msg;statusEl.style.color=bad?'#e16b6b':'';};
   function updateScale(){
     const input=Number(info?.fps)||0, output=Number($('fpsOutput').value);
@@ -1621,7 +1636,14 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
       try{
         coreURL=await loadAsset(FFmpegCoreBase+'/ffmpeg-core.js','text/javascript');
         wasmURL=await loadAsset(FFmpegCoreBase+'/ffmpeg-core.wasm','application/wasm');
-        await ffmpeg.load({coreURL,wasmURL});
+        // The package's default Worker URL points at jsDelivr, which browsers block
+        // as a cross-origin Worker. Start a same-origin blob Worker that imports
+        // the official module worker; its const.js/errors.js imports stay on jsDelivr.
+        if (!ffmpegClassWorkerBlobURL) {
+          const bootstrap = `import ${JSON.stringify(FFmpegWorkerURL)};`;
+          ffmpegClassWorkerBlobURL = URL.createObjectURL(new Blob([bootstrap], {type:'text/javascript'}));
+        }
+        await ffmpeg.load({coreURL,wasmURL,classWorkerURL:ffmpegClassWorkerBlobURL});
       }finally{
         if(coreURL)URL.revokeObjectURL(coreURL);
         if(wasmURL)URL.revokeObjectURL(wasmURL);

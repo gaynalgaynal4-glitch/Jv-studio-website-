@@ -1,0 +1,7 @@
+JV Video Lab Cloudflare Pages patch
+
+1. Fixed enhancer switch sizing/alignment and touch target.
+2. Enhancer toggle now gives correct mode feedback even before a video is selected.
+3. FFmpeg 0.12.15 now uses a same-origin blob bootstrap Worker that imports the official ESM worker from jsDelivr, avoiding new Worker() directly against the cross-origin CDN URL. FFmpeg core JS/WASM remain loaded from jsDelivr.
+
+Deploy the contents of this folder to the existing Cloudflare Pages project.
